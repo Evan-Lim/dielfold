@@ -1,0 +1,5 @@
+{
+  "name": "DielFold",
+  "description": "A minimalist, solar-locked waking-day accelerated clock designed for deep work with zero circadian drift.",
+  "requestFramePermissions": []
+}

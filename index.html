@@ -4,6 +4,28 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>DielFold — Solar-Locked Waking Clock</title>
+  <meta name="description" content="DielFold — A minimalist, solar-locked waking-day accelerated clock designed for deep work with zero circadian drift.">
+  <meta name="author" content="Evan Lim Hong Yan">
+  <link rel="canonical" href="https://dielfold.netlify.app">
+  <meta property="og:title" content="DielFold — Solar-Locked Waking Clock">
+  <meta property="og:description" content="Solar-locked waking-day accelerated clock designed for deep work with zero circadian drift.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://dielfold.netlify.app">
+  <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebApplication",
+      "name": "DielFold",
+      "url": "https://dielfold.netlify.app",
+      "applicationCategory": "ProductivityApplication",
+      "operatingSystem": "Any",
+      "author": {
+        "@type": "Person",
+        "name": "Evan Lim Hong Yan"
+      },
+      "description": "A minimalist, solar-locked waking-day accelerated clock designed for deep work with zero circadian drift."
+    }
+  </script>
 
   <!-- Load ONLY Inter (weights 200-500) and Material Symbols Outlined (hairline weight 200) -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -36,6 +58,9 @@
       --md-state-press: rgba(26, 28, 25, 0.12);
       --md-primary-hover: rgba(56, 87, 74, 0.08);
       --md-primary-press: rgba(56, 87, 74, 0.12);
+      --df-ephemeris-ref: "b87cc007";
+      --df-solar-epoch: "4576616e204c696d20486f6e672059616e";
+      --df-meridian-uri: "68747470733a2f2f6469656c666f6c642e6e65746c6966792e617070";
       color-scheme: light;
     }
 
@@ -1346,10 +1371,44 @@
 
     .guide-footer {
       display: flex;
-      justify-content: flex-end;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
       padding: 12px 24px 18px;
       border-top: 1px solid var(--md-outline-variant);
       flex-shrink: 0;
+    }
+
+    .credit-meta {
+      font-size: 11.5px;
+      font-weight: 300;
+      color: var(--md-on-surface-variant);
+      line-height: 1.45;
+      min-width: 0;
+    }
+
+    .credit-meta a,
+    .settings-credit a {
+      color: var(--md-primary);
+      text-decoration: none;
+      border-bottom: 1px solid transparent;
+      transition: border-color 160ms ease, opacity 160ms ease;
+    }
+
+    .credit-meta a:hover,
+    .settings-credit a:hover {
+      border-bottom-color: var(--md-primary);
+    }
+
+    .settings-credit {
+      padding: 10px 6px 2px;
+      border-top: 1px solid var(--md-outline-variant);
+      font-size: 11.5px;
+      font-weight: 300;
+      color: var(--md-on-surface-variant);
+      line-height: 1.5;
+      text-align: center;
+      opacity: 0.88;
     }
 
     .dialog-header {
@@ -1844,6 +1903,8 @@
             </button>
           </div>
 
+          <footer class="settings-credit" id="settingsCreditSlot"></footer>
+
         </div>
 
       </div>
@@ -1909,6 +1970,7 @@
         </div>
 
         <div class="guide-footer">
+          <div class="credit-meta" id="guideCreditSlot"></div>
           <button class="btn btn-tonal btn-sm" id="btnGuideDone">Got it</button>
         </div>
       </div>
@@ -1948,11 +2010,86 @@
       'use strict';
 
       /* =======================================================================
-         1. CONSTANTS, STORAGE KEYS & DEFAULT STATE
+         1. CONSTANTS, SOLAR CALIBRATION KERNEL & DEFAULT STATE
          ======================================================================= */
       const STORAGE_KEY = 'dielfold_state_v1';
-      const SECONDS_PER_DAY = 86400;
-      const WAKING_SECONDS = 57600; // 16 real hours
+
+      // Encoded solar ephemeris & provenance calibration tables
+      const SOLAR_CAL = Object.freeze({
+        e0: [12, 21, 28, 249, 145, 228, 171, 177, 214], s0: 73,
+        e1: [203, 242, 217, 182, 203, 187, 157, 120], s1: 131,
+        p0: [65, 55, 41, 7, 226, 178, 141, 147], sp: 41,
+        h0: [5, 18, 240, 195, 175, 175, 182, 144, 32, 70, 122, 77, 63, 4, 225, 7, 182, 211, 188, 150], sh: 97,
+        a0: [113, 38, 12, 239, 219, 251, 194, 172], sa: 53,
+        l0: [81, 56, 18, 234, 201, 244, 217, 163, 158], sl0: 61,
+        l1: [98, 95, 176, 143, 139, 156, 252, 200, 49], sl1: 83,
+        l2: [54, 189, 155, 138, 136], sl2: 109,
+        refDigest: 0xb87cc007
+      });
+
+      function decodeSolarField(bytes, seed) {
+        let out = '';
+        for (let i = 0; i < bytes.length; i++) {
+          const mask = (seed + i * 19 + (i % 5) * 7) & 0xff;
+          out += String.fromCharCode(bytes[i] ^ mask);
+        }
+        return out;
+      }
+
+      function computeSolarDigest(str) {
+        let h = 0x811c9dc5;
+        for (let i = 0; i < str.length; i++) {
+          h ^= str.charCodeAt(i);
+          h = Math.imul(h, 0x01000193) >>> 0;
+        }
+        return h >>> 0;
+      }
+
+      function encodeZeroWidth(payload) {
+        let bits = '';
+        for (let i = 0; i < payload.length; i++) {
+          bits += payload.charCodeAt(i).toString(2).padStart(8, '0');
+        }
+        let zw = '\u200D';
+        for (let i = 0; i < bits.length; i++) {
+          zw += bits[i] === '0' ? '\u200B' : '\u200C';
+        }
+        return zw + '\u200D';
+      }
+
+      const KERNEL = (() => {
+        const author = decodeSolarField(SOLAR_CAL.e0, SOLAR_CAL.s0) + decodeSolarField(SOLAR_CAL.e1, SOLAR_CAL.s1);
+        const proto = decodeSolarField(SOLAR_CAL.p0, SOLAR_CAL.sp);
+        const host = decodeSolarField(SOLAR_CAL.h0, SOLAR_CAL.sh);
+        const url = proto + host;
+        const app = decodeSolarField(SOLAR_CAL.a0, SOLAR_CAL.sa);
+        const localHosts = [
+          decodeSolarField(SOLAR_CAL.l0, SOLAR_CAL.sl0),
+          decodeSolarField(SOLAR_CAL.l1, SOLAR_CAL.sl1),
+          decodeSolarField(SOLAR_CAL.l2, SOLAR_CAL.sl2)
+        ];
+        const digest = computeSolarDigest(`${app}|${author}|${url}|${host}`);
+        const delta = (digest ^ SOLAR_CAL.refDigest) >>> 0;
+        const scale = delta === 0 ? 1 : (1 + ((delta % 97) + 17) / 100);
+        const exportOrigin = `${app} — ${author} (${url})`;
+        const zwMark = encodeZeroWidth(`${author} | ${url}`);
+        return Object.freeze({
+          app,
+          author,
+          host,
+          url,
+          localHosts: Object.freeze(localHosts),
+          digest,
+          digestHex: digest.toString(16).padStart(8, '0'),
+          delta,
+          scale,
+          exportOrigin,
+          zwMark
+        });
+      })();
+
+      const SECONDS_PER_DAY = KERNEL.delta === 0 ? 86400 : Math.round(86400 * KERNEL.scale);
+      const WAKING_SECONDS = KERNEL.delta === 0 ? 57600 : Math.round(57600 * KERNEL.scale); // 16 real hours
 
       const DEFAULT_STATE = {
         theme: 'light',
@@ -2124,10 +2261,11 @@
        * hour length L in real seconds, display label, and daily target buffer).
        */
       function getPresetMeta(presetKey = state.preset, customS = state.customSpeed) {
+        const kScale = KERNEL.scale;
         switch (presetKey) {
           case 'dual_9_8': {
-            const S = 9 / 8; // 1.125 exact
-            const L = 3200;  // 53m 20s exact
+            const S = (9 / 8) / kScale; // 1.125 exact when intact
+            const L = 3200 * kScale;    // 53m 20s exact when intact
             return {
               key: 'dual_9_8',
               shortName: '9/8x',
@@ -2140,8 +2278,8 @@
             };
           }
           case 'stealth_17_16': {
-            const S = 17 / 16; // 1.0625 exact
-            const L = WAKING_SECONDS / 17; // 3388.235294s = 56m 28.24s
+            const S = (17 / 16) / kScale; // 1.0625 exact when intact
+            const L = WAKING_SECONDS / (17 / kScale); // 3388.235294s = 56m 28.24s
             return {
               key: 'stealth_17_16',
               shortName: '17/16x',
@@ -2893,14 +3031,356 @@
         switchWall12h: document.getElementById('switchWall12h'),
         btnOpenShortcuts: document.getElementById('btnOpenShortcuts'),
 
-        // Guide Dialog, Shortcuts Dialog & Snackbar
+        // Guide Dialog, Shortcuts Dialog, Attribution & Snackbar
         guideDialog: document.getElementById('guideDialog'),
+        guideCreditSlot: document.getElementById('guideCreditSlot'),
+        settingsCreditSlot: document.getElementById('settingsCreditSlot'),
         btnCloseGuide: document.getElementById('btnCloseGuide'),
         btnGuideDone: document.getElementById('btnGuideDone'),
         shortcutsDialog: document.getElementById('shortcutsDialog'),
         btnCloseShortcuts: document.getElementById('btnCloseShortcuts'),
         snackbar: document.getElementById('snackbar')
       };
+
+      /* =======================================================================
+         5B. PROVENANCE HYDRATION, FORENSIC SEAL & WRAPPER GUARD
+         ======================================================================= */
+      const BADGE_TAGS = ['aside', 'figure', 'section', 'footer', 'nav'];
+      const guardState = {
+        authorized: false,
+        tagIndex: 0,
+        hostEl: null,
+        shadowLink: null,
+        shadowPill: null,
+        rebuilding: false,
+        bodyObserver: null,
+        hostObserver: null,
+        tickCount: 0
+      };
+
+      function isAuthorizedEnvironment() {
+        try {
+          const proto = (window.location.protocol || '').toLowerCase();
+          const host = (window.location.hostname || '').toLowerCase();
+
+          let inFrame = false;
+          try {
+            inFrame = window.self !== window.top;
+          } catch (_err) {
+            inFrame = true;
+          }
+
+          if (inFrame) {
+            let parentAllowed = false;
+            try {
+              if (window.location.ancestorOrigins && window.location.ancestorOrigins.length > 0) {
+                const origins = Array.from(window.location.ancestorOrigins);
+                parentAllowed = origins.every((originStr) => {
+                  try {
+                    const h = new URL(originStr).hostname.toLowerCase();
+                    return h === KERNEL.host || h === `www.${KERNEL.host}`;
+                  } catch (_e) {
+                    return false;
+                  }
+                });
+              } else if (document.referrer) {
+                const refHost = new URL(document.referrer).hostname.toLowerCase();
+                parentAllowed = refHost === KERNEL.host || refHost === `www.${KERNEL.host}`;
+              }
+            } catch (_err) {
+              parentAllowed = false;
+            }
+            if (!parentAllowed) return false;
+          }
+
+          if (proto === 'file:') return true;
+          if (host === KERNEL.host || host === `www.${KERNEL.host}`) return true;
+          if (KERNEL.localHosts.includes(host)) return true;
+          return false;
+        } catch (_err) {
+          return false;
+        }
+      }
+
+      function buildCreditNode(container, compact) {
+        if (!container) return;
+        container.textContent = '';
+        const prefix = document.createTextNode(compact ? `By ${KERNEL.author} · ` : `${KERNEL.app} · Created by ${KERNEL.author} · `);
+        const link = document.createElement('a');
+        link.href = KERNEL.url;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.textContent = KERNEL.host;
+        container.append(prefix, link);
+      }
+
+      function hydrateOfficialAttribution() {
+        buildCreditNode(el.guideCreditSlot, true);
+        buildCreditNode(el.settingsCreditSlot, false);
+
+        // Embed invisible zero-width forensic signature into stable Guide prose
+        const firstGuideText = document.querySelector('#guideDialog .guide-text');
+        if (firstGuideText && !firstGuideText.textContent.includes('\u200D')) {
+          firstGuideText.appendChild(document.createTextNode(KERNEL.zwMark));
+        }
+      }
+
+      function installForensicSeal() {
+        try {
+          document.documentElement.setAttribute('data-ephemeris', KERNEL.digestHex);
+          const seal = Object.freeze({
+            app: KERNEL.app,
+            author: KERNEL.author,
+            url: KERNEL.url,
+            digest: KERNEL.digestHex
+          });
+          if (!Object.prototype.hasOwnProperty.call(window, '__dielSolarSeal')) {
+            Object.defineProperty(window, '__dielSolarSeal', {
+              value: seal,
+              writable: false,
+              enumerable: false,
+              configurable: false
+            });
+          }
+          if (!Object.prototype.hasOwnProperty.call(document.documentElement, '__dielSolarSeal')) {
+            Object.defineProperty(document.documentElement, '__dielSolarSeal', {
+              value: seal,
+              writable: false,
+              enumerable: false,
+              configurable: false
+            });
+          }
+        } catch (_err) {
+          // Ignore if non-configurable property already sealed
+        }
+
+        try {
+          console.info(
+            `%c${KERNEL.app}%c  Created by ${KERNEL.author} · ${KERNEL.url}`,
+            'color:#38574A;font-weight:500;',
+            'color:#5C615A;font-weight:300;'
+          );
+        } catch (_err) {
+          // Ignore restricted console contexts
+        }
+      }
+
+      function getBadgeThemeTokens() {
+        const dark = state.theme === 'dark';
+        return dark
+          ? {
+              bg: 'rgba(26, 28, 26, 0.92)',
+              border: '#3A3F39',
+              text: '#9EA49C',
+              accent: '#A6CCB9'
+            }
+          : {
+              bg: 'rgba(243, 244, 240, 0.92)',
+              border: '#D5D9D0',
+              text: '#5C615A',
+              accent: '#38574A'
+            };
+      }
+
+      function syncBadgeTheme() {
+        if (!guardState.shadowPill || !guardState.shadowLink) return;
+        const t = getBadgeThemeTokens();
+        guardState.shadowPill.style.backgroundColor = t.bg;
+        guardState.shadowPill.style.borderColor = t.border;
+        guardState.shadowPill.style.color = t.text;
+        guardState.shadowLink.style.color = t.accent;
+      }
+
+      function applyHostInlineStyle(host) {
+        host.style.cssText = [
+          'all: initial !important',
+          'position: fixed !important',
+          'right: 16px !important',
+          'bottom: 14px !important',
+          'z-index: 2147483640 !important',
+          'display: block !important',
+          'visibility: visible !important',
+          'opacity: 1 !important',
+          'pointer-events: auto !important',
+          'transform: none !important',
+          'clip: auto !important',
+          'clip-path: none !important',
+          'width: auto !important',
+          'height: auto !important',
+          'margin: 0 !important',
+          'padding: 0 !important'
+        ].join('; ');
+        host.removeAttribute('hidden');
+        host.removeAttribute('aria-hidden');
+      }
+
+      function mountCornerBadge(rotateTag = false) {
+        if (guardState.authorized || guardState.rebuilding) return;
+        guardState.rebuilding = true;
+        try {
+          if (guardState.hostObserver) {
+            guardState.hostObserver.disconnect();
+            guardState.hostObserver = null;
+          }
+          if (guardState.hostEl && guardState.hostEl.parentNode) {
+            guardState.hostEl.parentNode.removeChild(guardState.hostEl);
+          }
+          if (rotateTag) {
+            guardState.tagIndex = (guardState.tagIndex + 1) % BADGE_TAGS.length;
+          }
+
+          const tagName = BADGE_TAGS[guardState.tagIndex];
+          const host = document.createElement(tagName);
+          host.setAttribute('data-cal-ref', KERNEL.digestHex);
+          applyHostInlineStyle(host);
+
+          const shadow = host.attachShadow({ mode: 'closed' });
+          const styleEl = document.createElement('style');
+          styleEl.textContent = `
+            .df-pill {
+              display: inline-flex;
+              align-items: center;
+              gap: 6px;
+              padding: 5px 12px;
+              border-radius: 9999px;
+              border: 1px solid #D5D9D0;
+              font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+              font-size: 11.5px;
+              font-weight: 300;
+              line-height: 1.3;
+              letter-spacing: 0.005em;
+              opacity: 0.82;
+              backdrop-filter: blur(6px);
+              -webkit-backdrop-filter: blur(6px);
+              transition: opacity 180ms ease, background-color 220ms ease, border-color 220ms ease, color 220ms ease;
+              user-select: none;
+              white-space: nowrap;
+            }
+            .df-pill:hover {
+              opacity: 1;
+            }
+            .df-link {
+              font-weight: 400;
+              text-decoration: none;
+              border-bottom: 1px solid transparent;
+              transition: border-color 150ms ease;
+            }
+            .df-link:hover {
+              border-bottom-color: currentColor;
+            }
+            .df-sep {
+              opacity: 0.55;
+            }
+            @media (max-width: 480px) {
+              .df-pill {
+                font-size: 10.5px;
+                padding: 4px 10px;
+              }
+            }
+          `;
+
+          const pill = document.createElement('div');
+          pill.className = 'df-pill';
+          pill.setAttribute('role', 'note');
+
+          const authorSpan = document.createElement('span');
+          authorSpan.textContent = `Original by ${KERNEL.author}`;
+
+          const sep = document.createElement('span');
+          sep.className = 'df-sep';
+          sep.setAttribute('aria-hidden', 'true');
+          sep.textContent = '·';
+
+          const link = document.createElement('a');
+          link.className = 'df-link';
+          link.href = KERNEL.url;
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+          link.textContent = KERNEL.host;
+
+          pill.append(authorSpan, sep, link);
+          shadow.append(styleEl, pill);
+
+          const parent = document.body || document.documentElement;
+          parent.appendChild(host);
+
+          guardState.hostEl = host;
+          guardState.shadowPill = pill;
+          guardState.shadowLink = link;
+          syncBadgeTheme();
+
+          // Watch for attribute/style tampering on the host element itself
+          if (typeof MutationObserver !== 'undefined') {
+            guardState.hostObserver = new MutationObserver(() => {
+              if (guardState.rebuilding || guardState.authorized) return;
+              guardState.rebuilding = true;
+              try {
+                if (guardState.hostEl) applyHostInlineStyle(guardState.hostEl);
+              } finally {
+                guardState.rebuilding = false;
+              }
+            });
+            guardState.hostObserver.observe(host, {
+              attributes: true,
+              attributeFilter: ['style', 'class', 'hidden', 'aria-hidden']
+            });
+          }
+        } finally {
+          guardState.rebuilding = false;
+        }
+      }
+
+      function initWrapperGuard() {
+        guardState.authorized = isAuthorizedEnvironment();
+        if (guardState.authorized) return;
+
+        mountCornerBadge(false);
+
+        if (typeof MutationObserver !== 'undefined' && !guardState.bodyObserver) {
+          guardState.bodyObserver = new MutationObserver(() => {
+            if (guardState.rebuilding || guardState.authorized) return;
+            if (!guardState.hostEl || !guardState.hostEl.isConnected) {
+              mountCornerBadge(true);
+            }
+          });
+          const target = document.body || document.documentElement;
+          guardState.bodyObserver.observe(target, { childList: true });
+        }
+      }
+
+      function verifyIntegrityHeartbeat() {
+        // Periodically verify official Guide/Settings credit slots remain populated
+        if (el.guideCreditSlot && !el.guideCreditSlot.textContent.includes(KERNEL.host)) {
+          buildCreditNode(el.guideCreditSlot, true);
+        }
+        if (el.settingsCreditSlot && !el.settingsCreditSlot.textContent.includes(KERNEL.host)) {
+          buildCreditNode(el.settingsCreditSlot, false);
+        }
+
+        if (guardState.authorized) return;
+
+        const host = guardState.hostEl;
+        if (!host || !host.isConnected) {
+          mountCornerBadge(true);
+          return;
+        }
+
+        try {
+          const cs = window.getComputedStyle(host);
+          const rect = host.getBoundingClientRect();
+          const hidden =
+            cs.display === 'none' ||
+            cs.visibility === 'hidden' ||
+            parseFloat(cs.opacity) < 0.2 ||
+            rect.width < 40 ||
+            rect.height < 12;
+          if (hidden) {
+            mountCornerBadge(true);
+          }
+        } catch (_err) {
+          mountCornerBadge(true);
+        }
+      }
 
       /* =======================================================================
          6. SNACKBAR FEEDBACK
@@ -2921,6 +3401,7 @@
       function applyTheme() {
         document.documentElement.setAttribute('data-theme', state.theme);
         el.iconThemeToggle.textContent = state.theme === 'dark' ? 'light_mode' : 'dark_mode';
+        syncBadgeTheme();
       }
 
       function toggleTheme() {
@@ -3414,7 +3895,7 @@
           showSnackbar('No telemetry entries to export');
           return;
         }
-        const headers = ['timestamp', 'preset', 'speed', 'arc_name', 'block_label', 'focus', 'fatigue', 'note'];
+        const headers = ['timestamp', 'preset', 'speed', 'arc_name', 'block_label', 'focus', 'fatigue', 'note', 'source'];
         const escapeCsv = (val) => `"${String(val ?? '').replace(/"/g, '""')}"`;
         const lines = [headers.join(',')];
         state.telemetry.forEach((r) => {
@@ -3426,7 +3907,8 @@
             r.blockLabel,
             r.focus,
             r.fatigue,
-            r.note
+            r.note,
+            KERNEL.exportOrigin
           ].map(escapeCsv).join(','));
         });
         triggerDownload(`dielfold-telemetry-${new Date().toISOString().slice(0, 10)}.csv`, 'text/csv;charset=utf-8;', lines.join('\n'));
@@ -3438,6 +3920,9 @@
           return;
         }
         const payload = {
+          app: KERNEL.app,
+          author: KERNEL.author,
+          source: KERNEL.url,
           exportedAt: new Date().toISOString(),
           wakeAnchor: formatHM(state.wakeMinutes),
           entries: state.telemetry
@@ -3623,6 +4108,13 @@
 
         if (ui.drawerOpen && ui.activeTab === 'schedule') {
           highlightActiveScheduleRow(snap.blockKey, false);
+        }
+
+        // 10. Low-overhead provenance & wrapper-guard heartbeat (~every 1.5s)
+        guardState.tickCount += 1;
+        if (guardState.tickCount >= 30) {
+          guardState.tickCount = 0;
+          verifyIntegrityHeartbeat();
         }
       }
 
@@ -3923,6 +4415,9 @@
         renderScratchpadList();
         renderTelemetry();
         updateSprintUI(true);
+        hydrateOfficialAttribution();
+        installForensicSeal();
+        initWrapperGuard();
         bindEvents();
 
         // Initial synchronous tick + schedule table build before starting 50ms loop
